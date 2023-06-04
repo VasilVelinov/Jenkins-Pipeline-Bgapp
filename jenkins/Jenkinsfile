@@ -1,0 +1,120 @@
+pipeline
+{
+    agent
+    {
+        label 'containers-node'
+    }
+    environment
+    {
+        DOCKERHUB_CREDENTIALS=credentials('docker-hub')
+    }
+    stages
+    {
+        stage('Clone')
+        {
+            steps
+            {
+                git branch: 'main', url: 'http://192.168.56.202:3000/doadmin/exam'
+            }
+        }
+        stage ('Build Image')
+        {
+            steps
+            {
+                sh '''
+                    cd /home/vagrant/workspace/exam-pipeline/client/
+                    docker image rm -f img-client || true
+                    docker image build -t img-client .
+                    cd /home/vagrant/workspace/exam-pipeline/storage/
+                    docker image rm -f img-storage || true
+                    docker image build -t img-storage .
+                    cd /home/vagrant/workspace/exam-pipeline/generator/
+                    docker image rm -f img-generator || true
+                    docker image build -t img-generator .
+                '''
+            }
+        }
+        stage('Create network')
+        {
+            steps
+            {
+                
+                sh 'docker network ls | grep exam-net || docker network create exam-net'
+            }
+        }
+        stage('Run')
+        {
+            steps
+            {
+                sh '''
+                    docker container rm -f con-client || true
+                    docker container run -d --name con-client --net exam-net -p 8080:5000 img-client
+                    docker container rm -f con-storage || true
+                    docker container run -d --name con-storage --net exam-net -e MYSQL_ROOT_PASSWORD='ExamPa$$w0rd' img-storage
+                    docker container rm -f con-generator || true
+                    docker container run -d --name con-generator --net exam-net img-generator
+                    
+                '''
+            }
+        }
+        stage('Test')
+        {
+            steps
+            {
+                script
+                {
+                    echo 'Test reachability'
+                    sh 'sleep 3'
+                    sh 'echo $(curl --write-out "%{http_code}" --silent --output /dev/null http://192.168.56.202:8080) | grep 200'
+                    sh 'sleep 20'
+                }
+
+            }
+        }
+        stage('CleanUp')
+        {
+            steps
+            {
+                sh '''
+                    docker container rm -f con-client || true
+                    docker container rm -f con-storage || true
+                    docker container rm -f con-generator || true
+                '''
+            }
+        }
+        stage('Login to DockerHub')
+        {
+            steps
+            {
+                sh 'echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin'
+            }
+        }
+        stage('Push')
+        {
+            steps
+            {
+                sh 'docker image tag img-client vasilvelinov93/exam-client'
+                sh 'docker image tag img-storage vasilvelinov93/exam-storage'
+                sh 'docker image tag img-generator vasilvelinov93/exam-generator'
+                sh 'docker push vasilvelinov93/exam-client'
+                sh 'docker push vasilvelinov93/exam-storage'
+                sh 'docker push vasilvelinov93/exam-generator'
+
+            }
+        }
+        stage('Deploy')
+        {
+            steps
+            {
+                sh '''
+                    docker container rm -f con-client || true
+                    docker container run -d --name con-client --net exam-net -p 80:5000 vasilvelinov93/exam-client
+                    docker container rm -f con-storage || true
+                    docker container run -d --name con-storage --net exam-net -e MYSQL_ROOT_PASSWORD='ExamPa$$w0rd' vasilvelinov93/exam-storage
+                    docker container rm -f con-generator || true
+                    docker container run -d --name con-generator --net exam-net vasilvelinov93/exam-generator
+                '''
+            }
+        }
+    }
+}
